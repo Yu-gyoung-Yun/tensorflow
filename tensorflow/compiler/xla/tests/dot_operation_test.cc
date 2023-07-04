@@ -35,6 +35,35 @@ limitations under the License.
 #include "tensorflow/tsl/platform/test.h"
 #include "tensorflow/tsl/platform/test_benchmark.h"
 
+
+// [YYG]
+#include <cuda.h>
+#include <cupti.h>
+#include <iostream>
+
+// ------ cupti ---------
+#include <stdio.h>
+#include <cuda.h>
+#include <cupti.h>
+
+#define CUPTI_CALL(call)                                                    \
+  do {                                                                      \
+    CUptiResult _status = call;                                             \
+    if (_status != CUPTI_SUCCESS) {                                         \
+      const char *errstr;                                                   \
+      cuptiGetResultString(_status, &errstr);                               \
+      fprintf(stderr, "%s:%d: error: function %s failed with error %s.\n",  \
+              __FILE__, __LINE__, #call, errstr);                           \
+      exit(-1);                                                             \
+    }                                                                       \
+  } while (0)
+
+#define BUF_SIZE (32 * 1024)
+#define ALIGN_SIZE (8)
+#define ALIGN_BUFFER(buffer, align)                                            \
+  (((uintptr_t) (buffer) & ((align)-1)) ? ((buffer) + (align) - ((uintptr_t) (buffer) & ((align)-1))) : (buffer))
+
+
 namespace xla {
 namespace {
 
@@ -85,7 +114,13 @@ XLA_TEST_F(DotOperationTest, DotOfInputTupleElem) {
   auto lhs = GetTupleElement(param, 0);
   auto rhs = GetTupleElement(param, 1);
   Dot(lhs, rhs);
-
+  CUpti_SubscriberHandle subscriber;
+  
+  // Create CUDA context and enable activity and metric profiling
+  cuInit(0);
+  CUcontext  cuContext;
+  cuCtxCreate(&cuContext, 0, 0);
+  //CUpti_ActivityProfiler_EnableActivityProfiling(cuContext); // Not Working
   ComputeAndCompareLiteral(&builder,
                            LiteralUtil::CreateR2<float>({{19, 22}, {43, 50}}),
                            {param_data.get()});
