@@ -13,18 +13,54 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/compiler/xla/service/gpu/gpu_device_info.h"
+#include "xla/service/gpu/gpu_device_info.h"
 
 #include <string>
 
 #include "absl/strings/string_view.h"
-#include "tensorflow/compiler/xla/service/gpu/gpu_device_info_for_tests.h"
-#include "tensorflow/compiler/xla/stream_executor/gpu/gpu_executor.h"
-#include "tensorflow/tsl/platform/test.h"
+#include "xla/service/gpu/gpu_device_info_for_tests.h"
+#include "xla/stream_executor/gpu/gpu_executor.h"
+#include "tsl/platform/test.h"
 
 #if TENSORFLOW_USE_ROCM
 #include "rocm/rocm_config.h"
+
 #endif
+
+//[YG]
+
+
+#include <iomanip>
+#include <iostream>
+#include <ostream>
+#include <string>
+#include <vector>
+
+#include "xla/service/hlo_cost_analysis.h"
+#include "xla/tools/hlo_module_loader.h"
+#include "tsl/platform/init_main.h"
+#include "xla/service/gpu/backend_configs.pb.h"
+
+// [YG]
+// For GPU backend
+#include "xla/service/gpu/gpu_hlo_schedule.h"
+
+#include <algorithm>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "xla/hlo/ir/hlo_computation.h"
+#include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/ir/hlo_schedule.h"
+#include "xla/hlo/utils/hlo_query.h"
+#include "xla/service/gpu/gpu_device_info.h"
+#include "xla/tests/hlo_test_base.h"
+#include "xla/tests/test_utils.h"
+#include "tsl/profiler/protobuf/profiled_instructions.pb.h"
 
 namespace stream_executor {
 namespace gpu {
@@ -34,120 +70,107 @@ namespace se = stream_executor;
 
 TEST(DeviceInfoTest, DeviceInfoIsCorrect) {
   std::string test_platform = "cuda";
-#if TENSORFLOW_USE_ROCM
-  test_platform = "rocm";
-#endif
+  #if TENSORFLOW_USE_ROCM
+    test_platform = "rocm";
+  #endif
+  // GPU 0
   se::Platform* platform =
       se::MultiPlatformManager::PlatformWithName(test_platform).value();
   se::StreamExecutor* executor = platform->ExecutorForDevice(0).value();
   const xla::gpu::GpuDeviceInfo dev_info = xla::gpu::GetGpuDeviceInfo(executor);
   absl::string_view name(dev_info.name);
-  if (name == "NVIDIA RTX A6000") {
-    xla::gpu::GpuDeviceInfo test_info =
-        xla::gpu::TestGpuDeviceInfo::RTXA6000DeviceInfo();
-    EXPECT_THAT(
-        dev_info,
-        ::testing::FieldsAre(
-            test_info.name, test_info.threads_per_block_limit,
-            test_info.threads_per_warp, test_info.shared_memory_per_block,
-            test_info.shared_memory_per_block_optin,
-            test_info.shared_memory_per_core, test_info.threads_per_core_limit,
-            test_info.core_count, test_info.fpus_per_core,
-            test_info.block_dim_limit_x, test_info.block_dim_limit_y,
-            test_info.block_dim_limit_z, test_info.memory_bandwidth,
-            test_info.l2_cache_size,
-            // Clock rate can vary between base and boost values.
-            ::testing::Ge(test_info.clock_rate_ghz),
-            dev_info.device_memory_size));
-  } else if (name == "Quadro P1000") {
-    EXPECT_THAT(
-        dev_info,
-        ::testing::FieldsAre(
-            name, /*threads_per_block_limit=*/1024,
-            /*threads_per_warp=*/32, /*shared_memory_per_block=*/48 * 1024,
-            /*shared_memory_per_block_optin=*/48 * 1024,
-            /*shared_memory_per_core=*/96 * 1024,
-            /*threads_per_core_limit=*/2048, /*core_count=*/5,
-            /*fpus_per_core=*/128,
-            /*block_dim_limit_x=*/2'147'483'647,
-            /*block_dim_limit_y=*/65535,
-            /*block_dim_limit_z=*/65535,
-            /*memory_bandwidth=*/80'160'000'000, /*l2_cache_size=*/1024 * 1024,
-            /*clock_rate_ghz=*/::testing::Ge(1.4),
-            /*device_memory_size=*/4'234'346'496));
-  } else if (name == "Tesla P100-SXM2-16GB") {
-    EXPECT_THAT(
-        dev_info,
-        ::testing::FieldsAre(name, /*threads_per_block_limit=*/1024,
-                             /*threads_per_warp=*/32,
-                             /*shared_memory_per_block=*/48 * 1024,
-                             /*shared_memory_per_block_optin=*/48 * 1024,
-                             /*shared_memory_per_core=*/64 * 1024,
-                             /*threads_per_core_limit=*/2048, /*core_count=*/56,
-                             /*fpus_per_core=*/64,
-                             /*block_dim_limit_x=*/2'147'483'647,
-                             /*block_dim_limit_y=*/65535,
-                             /*block_dim_limit_z=*/65535,
-                             /*memory_bandwidth=*/732'160'000'000,
-                             /*l2_cache_size=*/4 * 1024 * 1024,
-                             /*clock_rate_ghz=*/::testing::Ge(1.4),
-                             /*device_memory_size=*/17'066'622'976));
-  }
-#if TF_ROCM_VERSION >= 50500
-  else if (name == "AMD Instinct MI210") {  // NOLINT
-    xla::gpu::GpuDeviceInfo test_info =
-        xla::gpu::TestGpuDeviceInfo::AMDMI210DeviceInfo();
-    EXPECT_THAT(
-        dev_info,
-        ::testing::FieldsAre(
-            test_info.name, test_info.threads_per_block_limit,
-            test_info.threads_per_warp, test_info.shared_memory_per_block,
-            test_info.shared_memory_per_block_optin,
-            test_info.shared_memory_per_core, test_info.threads_per_core_limit,
-            test_info.core_count, test_info.fpus_per_core,
-            test_info.block_dim_limit_x, test_info.block_dim_limit_y,
-            test_info.block_dim_limit_z, test_info.memory_bandwidth,
-            test_info.l2_cache_size, ::testing::Ge(test_info.clock_rate_ghz),
-            dev_info.device_memory_size));
-  } else if (name == "AMD Instinct MI100") {
-    EXPECT_THAT(
-        dev_info,
-        ::testing::FieldsAre(
-            name, /*threads_per_block_limit=*/1024,
-            /*threads_per_warp=*/64, /*shared_memory_per_block=*/64 * 1024,
-            /*shared_memory_per_block_optin=*/0,
-            /*shared_memory_per_core=*/64 * 1024,
-            /*threads_per_core_limit=*/2560, /*core_count=*/120,
-            /*fpus_per_core=*/0, /*block_dim_limit_x=*/2'147'483'647,
-            /*block_dim_limit_y=*/2'147'483'647,
-            /*block_dim_limit_z=*/2'147'483'647,
-            /*memory_bandwidth=*/1228800000000,
-            /*l2_cache_size=*/8 * 1024 * 1024,
-            /*clock_rate_ghz=*/::testing::Ge(1.5),
-            /*device_memory_size=*/33'806'090'240));
-  } else if (name == "AMD Instinct M100") {
-    EXPECT_THAT(
-        dev_info,
-        ::testing::FieldsAre(
-            name, /*threads_per_block_limit=*/1024,
-            /*threads_per_warp=*/64, /*shared_memory_per_block=*/64 * 1024,
-            /*shared_memory_per_block_optin=*/0,
-            /*shared_memory_per_core=*/64 * 1024,
-            /*threads_per_core_limit=*/2560, /*core_count=*/60,
-            /*fpus_per_core=*/0, /*block_dim_limit_x=*/2'147'483'647,
-            /*block_dim_limit_y=*/2'147'483'647,
-            /*block_dim_limit_z=*/2'147'483'647,
-            /*memory_bandwidth=*/256000000000,
-            /*l2_cache_size=*/8 * 1024 * 1024,
-            /*clock_rate_ghz=*/::testing::Ge(1.7),
-            /*device_memory_size=*/17'163'091'968));
-  }
-#endif    // TF_ROCM_VERSION >= 50500
-  else {  // NOLINT
-    VLOG(1) << "Not tested for " << name;
-  }
+  std::cout<<"gpu NAME: "<<name<<"\n"; // NVIDIA A100-SXM4-80GB
+  std::cout<<"gpu threads_per_block_limit: "<<dev_info.threads_per_block_limit<<"\n"; //1024
+  
+  // GPU 1
+  se::StreamExecutor* executor_ = platform->ExecutorForDevice(1).value();
+  const xla::gpu::GpuDeviceInfo dev_info_ = xla::gpu::GetGpuDeviceInfo(executor);
+  absl::string_view name_(dev_info_.name);
+  std::cout<<"gpu NAME: "<<name_<<"\n"; // NVIDIA A100-SXM4-80GB
+  std::cout<<"gpu threads_per_block_limit: "<<dev_info_.threads_per_block_limit<<"\n"; //1024
+
 }
 
 }  // namespace
 }  // namespace gpu
 }  // namespace stream_executor
+
+namespace {
+const char* const kUsage = R"(
+This tool prints the compute cost (flops and memory traffic) of an HLO module.
+
+The input file can be obtained from XProf graph viewer by clicking
+"Download as short text".
+
+Usage:
+
+  bazel run compute_cost -- -input=path/to/hlo_module -format=[hlo|pb|pbtxt]
+)";
+}  // namespace
+
+int main(int argc, char** argv) {
+  std::string input, format;
+  input = "/root/yg/xla/xla/tools/data/add.hlo";
+  format = "hlo";
+  bool bool_profile = true;
+  std::vector<tsl::Flag> flag_list = {
+      tsl::Flag("input", &input, "input file"),
+      tsl::Flag("format", &format, "hlo|pb|pbtxt")};
+      tsl::Flag("xla_hlo_profile", &bool_profile, "bool value for real profile");
+  xla::AppendDebugOptionsFlags(&flag_list);
+  const std::string kUsageString =
+      absl::StrCat(kUsage, "\n\n", tsl::Flags::Usage(argv[0], flag_list));
+  bool parse_ok = tsl::Flags::Parse(&argc, argv, flag_list);
+  tsl::port::InitMain(kUsageString.c_str(), &argc, &argv);
+  if (!parse_ok) {
+    LOG(QFATAL) << kUsageString;
+  }
+
+  xla::HloCostAnalysis analysis([](const xla::Shape& shape) {
+    return xla::ShapeUtil::ByteSizeOf(shape, 8);
+  });
+
+  TF_CHECK_OK(xla::LoadModuleFromFile(input, {}, format)
+                  .value()
+                  ->entry_computation()
+                  ->root_instruction()
+                  ->Accept(&analysis));
+
+  std::cout << std::setw(5) << std::setprecision(4)
+            << analysis.flop_count() / (1e9) << " GFLOPS. "
+            << analysis.bytes_accessed() / (1e6) << " MiB." << std::endl;
+  
+
+  // Multi GPUs
+
+  /*auto computation = xla::LoadModuleFromFile(input, {}, format)
+                      .value()
+                      ->entry_computation();
+  XlaBuilder builder("add");
+  TF_ASSERT_OK_AND_ASSIGN(auto computation, builder.Build());
+  std::string profile_output;*/
+  //ExecuteAndFetchProfile(&profile_output, client, computation, lhs_shape,
+  //                       rhs_shape);
+  namespace se = stream_executor;
+  std::string test_platform = "cuda";
+  #if TENSORFLOW_USE_ROCM
+    test_platform = "rocm";
+  #endif
+
+  se::Platform* platform =
+      se::MultiPlatformManager::PlatformWithName(test_platform).value();
+  se::StreamExecutor* executor = platform->ExecutorForDevice(0).value(); // GPU 0
+  const xla::gpu::GpuDeviceInfo dev_info = xla::gpu::GetGpuDeviceInfo(executor);
+  absl::string_view name(dev_info.name);
+  std::cout<<"gpu NAME: "<<name<<"\n"; // NVIDIA A100-SXM4-80GB
+  std::cout<<"gpu threads_per_block_limit: "<<dev_info.threads_per_block_limit<<"\n"; //1024
+
+  //auto test_backend = xla::gpu::backend();
+  //auto a = xla::gpu::backend()
+  //std::cout<<"a: "<<type(a)<<"\n";
+  //::testing::InitGoogleTest(&argc, argv);
+  
+  //return RUN_ALL_TESTS();
+
+  return 0;
+}
